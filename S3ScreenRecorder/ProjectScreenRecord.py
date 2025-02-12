@@ -14,9 +14,10 @@ import boto3  # مكتبة Boto3 لرفع الملفات إلى S3
 import io  # للتعامل مع الذاكرة كملف
 from ttkbootstrap.dialogs import Messagebox  # لإظهار رسائل للمستخدم
 import getmac  # للحصول على عنوان MAC للجهاز
-from dotenv import load_dotenv  # لتحميل المتغيرات من ملف .env
+import time  # للتعامل مع الوقت
+from dotenv import load_dotenv  # لتحميل المتغيرات البيئية من ملف .env
 
-# تحميل المتغيرات من ملف .env
+# تحميل المتغيرات البيئية من ملف .env
 load_dotenv()
 
 # إعدادات AWS من ملف .env
@@ -47,23 +48,28 @@ def get_device_id():
         return "unknown_device"  # استخدام معرف افتراضي في حالة الخطأ
 
 class AudioRecorder:
-    def __init__(self, sample_rate=44100, channels=2):
+    def _init_(self, sample_rate=48000, channels=1):  # تغيير عدد القنوات إلى 1
         self.sample_rate = sample_rate
         self.channels = channels
         self.recording = False
         self.audio_data = []
         self.start_time = None
+        self.stream = None  # إضافة تعريف للـ stream
 
     def start(self):
         self.recording = True
         self.audio_data = []
         self.start_time = datetime.now()
-        self.stream = sd.InputStream(
-            samplerate=self.sample_rate, 
-            channels=self.channels,
-            callback=self._audio_callback
-        )
-        self.stream.start()
+        try:
+            self.stream = sd.InputStream(
+                samplerate=self.sample_rate, 
+                channels=self.channels,
+                callback=self._audio_callback
+            )
+            self.stream.start()
+        except Exception as e:
+            self.recording = False
+            Messagebox.show_error(f"Error starting audio recording: {e}")
 
     def _audio_callback(self, indata, frames, time, status):
         if status:
@@ -73,10 +79,14 @@ class AudioRecorder:
 
     def stop(self):
         self.recording = False
-        self.stream.stop()
+        if self.stream:
+            self.stream.stop()
+            self.stream.close()
         return self.audio_data, self.start_time
 
     def save_to_memory(self):
+        if not self.audio_data:
+            return None
         audio_data = np.concatenate(self.audio_data, axis=0)
         buffer = io.BytesIO()
         sf.write(buffer, audio_data, self.sample_rate, format='wav')
@@ -84,7 +94,7 @@ class AudioRecorder:
         return buffer
 
 class SystemAudioRecorder:
-    def __init__(self, sample_rate=44100):
+    def _init_(self, sample_rate=44100):
         self.sample_rate = sample_rate
         self.recording = False
         self.audio_data = []
@@ -107,6 +117,8 @@ class SystemAudioRecorder:
         return self.audio_data, self.start_time
 
     def save_to_memory(self):
+        if not self.audio_data:
+            return None
         audio_data = np.concatenate(self.audio_data, axis=0)
         buffer = io.BytesIO()
         sf.write(buffer, audio_data, self.sample_rate, format='wav')
@@ -114,7 +126,7 @@ class SystemAudioRecorder:
         return buffer
 
 class VideoRecorder:
-    def __init__(self, fps=9):
+    def _init_(self, fps=9):
         self.fps = fps
         self.recording = False
         self.frames = []
@@ -163,7 +175,7 @@ class VideoRecorder:
         return video_buffer
 
 class ScreenRecorder:
-    def __init__(self, device_id=None):
+    def _init_(self, device_id=None):
         self.root = ttk.Window(themename="darkly")
         self.root.title("Screen Recorder")
         self.root.geometry("400x200")
@@ -265,7 +277,7 @@ class ScreenRecorder:
     def _record_video(self):
         while self.is_recording:
             self.video_recorder.capture_frame()
-            pyautogui.sleep(1/self.video_recorder.fps)
+            time.sleep(1/self.video_recorder.fps)
     
     def merge_audio_video(self, video_buffer, mic_audio_buffer, system_audio_buffer):
         try:
@@ -333,8 +345,8 @@ class ScreenRecorder:
     
     def _find_ffmpeg(self):
         possible_paths = [
-            r'D:\ffmpeg.exe',
-            r'C:\ffmpeg.exe',
+            r'D:\work\ghayma\ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe',
+            r'C:\Windows\System32\ffmpeg',
             os.path.join(os.getcwd(), 'ffmpeg.exe')
         ]
         
@@ -350,7 +362,7 @@ class ScreenRecorder:
     def run(self):
         self.root.mainloop()
 
-if __name__ == "__main__":
+if _name_ == "_main_":
     device_id = get_device_id()  # الحصول على device_id ثابت
     app = ScreenRecorder(device_id=device_id)
     app.run()
