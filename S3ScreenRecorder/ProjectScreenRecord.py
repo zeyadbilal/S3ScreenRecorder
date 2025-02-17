@@ -7,7 +7,6 @@ import threading
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from datetime import datetime
-import os
 import subprocess
 import soundcard as sc  # لتسجيل صوت النظام
 import boto3  # مكتبة Boto3 لرفع الملفات إلى S3
@@ -15,7 +14,10 @@ import io  # للتعامل مع الذاكرة كملف
 from ttkbootstrap.dialogs import Messagebox  # لإظهار رسائل للمستخدم
 import getmac  # للحصول على عنوان MAC للجهاز
 import time  # للتعامل مع الوقت
-from dotenv import load_dotenv  # لتحميل المتغيرات البيئية من ملف .env
+import webbrowser  # لفتح الرابط في المتصفح
+
+from dotenv import load_dotenv   # لتحميل المتغيرات البيئية من ملف .env
+import os
 
 # تحميل المتغيرات البيئية من ملف .env
 load_dotenv()
@@ -24,13 +26,15 @@ load_dotenv()
 AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_KEY')
 BUCKET_NAME = os.getenv('BUCKET_NAME')
-folder_name = os.getenv('FOLDER_NAME')  # اسم المجلد الرئيسي
+FOLDER_NAME = os.getenv('FOLDER_NAME') # اسم المجلد الرئيسي
 
 # تهيئة عميل S3
 s3_client = boto3.client(
     's3',
     aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_KEY
+    aws_secret_access_key=AWS_SECRET_KEY,
+    region_name='us-east-2',  # تغيير المنطقة إلى us-east-2
+    config=boto3.session.Config(signature_version='s3v4')  # استخدام AWS4-HMAC-SHA256
 )
 
 def get_device_id():
@@ -48,7 +52,7 @@ def get_device_id():
         return "unknown_device"  # استخدام معرف افتراضي في حالة الخطأ
 
 class AudioRecorder:
-    def _init_(self, sample_rate=48000, channels=1):  # تغيير عدد القنوات إلى 1
+    def __init__(self, sample_rate=48000, channels=1):  # تغيير عدد القنوات إلى 1
         self.sample_rate = sample_rate
         self.channels = channels
         self.recording = False
@@ -94,7 +98,7 @@ class AudioRecorder:
         return buffer
 
 class SystemAudioRecorder:
-    def _init_(self, sample_rate=44100):
+    def __init__(self, sample_rate=44100):
         self.sample_rate = sample_rate
         self.recording = False
         self.audio_data = []
@@ -126,7 +130,7 @@ class SystemAudioRecorder:
         return buffer
 
 class VideoRecorder:
-    def _init_(self, fps=9):
+    def __init__(self, fps=9):
         self.fps = fps
         self.recording = False
         self.frames = []
@@ -175,10 +179,10 @@ class VideoRecorder:
         return video_buffer
 
 class ScreenRecorder:
-    def _init_(self, device_id=None):
+    def __init__(self, device_id=None):
         self.root = ttk.Window(themename="darkly")
         self.root.title("Screen Recorder")
-        self.root.geometry("400x200")
+        self.root.geometry("400x300")  # زيادة حجم النافذة لعرض الروابط
         
         self.is_recording = False
         self.audio_recorder = AudioRecorder()
@@ -216,6 +220,16 @@ class ScreenRecorder:
             bootstyle="info"
         )
         self.status_label.pack(pady=10)
+
+        # عرض روابط التنزيل
+        self.download_label = ttk.Label(
+            main_frame, 
+            text="Download URL: N/A", 
+            bootstyle="info",
+            cursor="hand2"  # تغيير شكل المؤشر إلى يد للإشارة إلى أن النص قابل للنقر
+        )
+        self.download_label.pack(pady=10)
+        self.download_label.bind("<Button-1>", self.open_download_url)  # ربط حدث النقر بفتح الرابط
 
     def log_status(self, message):
         self.status_label.config(text=message)
@@ -264,6 +278,23 @@ class ScreenRecorder:
         # دمج الفيديو مع صوت النظام والميكروفون
         self.merge_audio_video(video_buffer, mic_audio_buffer, system_audio_buffer)
 
+    def generate_presigned_url(self, object_key, expiration=7200):
+        """
+        إنشاء رابط مؤقت لتنزيل الملف من S3.
+        """
+        try:
+            url = s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': BUCKET_NAME, 'Key': object_key},
+                ExpiresIn=expiration,
+                HttpMethod='GET'
+            )
+            print(f"Generated presigned URL: {url}")  # طباعة الرابط للتحقق
+            return url
+        except Exception as e:
+            self.log_status(f"Error generating presigned URL: {e}")
+            return None
+
     def upload_to_s3(self, buffer, file_name):
         current_date = datetime.now().strftime('%Y-%m-%d')
         s3_path = f"{folder_name}team-recordings/{current_date}/{self.device_id}/all-recordings/{file_name}"
@@ -271,8 +302,23 @@ class ScreenRecorder:
         try:
             s3_client.upload_fileobj(buffer, BUCKET_NAME, s3_path)
             self.log_status(f"File uploaded successfully to: {s3_path}")
+
+            # إنشاء رابط مؤقت للتنزيل
+            download_url = self.generate_presigned_url(s3_path)
+            if download_url:
+                self.download_label.config(text=f"Download URL: {download_url}")
+                self.download_url = download_url  # حفظ الرابط للاستخدام لاحقًا
+            else:
+                self.log_status("Failed to generate download URL.")
         except Exception as e:
             self.log_status(f"Error uploading file: {e}")
+
+    def open_download_url(self, event):
+        """
+        فتح الرابط في المتصفح عند النقر عليه.
+        """
+        if hasattr(self, 'download_url'):
+            webbrowser.open(self.download_url)
 
     def _record_video(self):
         while self.is_recording:
@@ -345,8 +391,11 @@ class ScreenRecorder:
     
     def _find_ffmpeg(self):
         possible_paths = [
-            r'D:\work\ghayma\ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe',
-            r'C:\Windows\System32\ffmpeg',
+            r'D:\ffmpeg.exe',
+            r'C:\ffmpeg',
+            r'C:\Program Files\FFmpeg\bin\ffmpeg.exe',
+            r'C:\Program Files (x86)\FFmpeg\bin\ffmpeg.exe',
+            r'D:\Program Files\FFmpeg\bin\ffmpeg.exe',
             os.path.join(os.getcwd(), 'ffmpeg.exe')
         ]
         
@@ -362,7 +411,7 @@ class ScreenRecorder:
     def run(self):
         self.root.mainloop()
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     device_id = get_device_id()  # الحصول على device_id ثابت
     app = ScreenRecorder(device_id=device_id)
     app.run()
